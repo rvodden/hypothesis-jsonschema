@@ -17,8 +17,9 @@ import itertools
 import json
 import math
 import re
-from fractions import Fraction
-from typing import Any, Dict, List, Optional, Tuple, Union
+from copy import deepcopy
+from typing import Any, Dict, List, NoReturn, Optional, Tuple, Union
+from urllib.parse import urljoin
 
 import jsonschema
 from hypothesis.errors import InvalidArgument
@@ -583,6 +584,85 @@ def canonicalish(schema: JSONType) -> Dict[str, Any]:
 
 TRUTHY = canonicalish(True)
 FALSEY = canonicalish(False)
+
+
+class LocalResolver(jsonschema.RefResolver):
+    def resolve_remote(self, uri: str) -> NoReturn:
+        raise HypothesisRefResolutionError(
+            f"hypothesis-jsonschema does not fetch remote references (uri={uri!r})"
+        )
+
+
+def is_recursive_reference(reference: str, resolver: LocalResolver) -> bool:
+    """Detect if the given reference is recursive."""
+    # Special case: a reference to the schema's root is always recursive
+    if reference == "#":
+        return True
+    # During reference resolving the scope might go to external schemas. `hypothesis-jsonschema` does not support
+    # schemas behind remote references, but the underlying `jsonschema` library includes meta schemas for
+    # different JSON Schema drafts that are available transparently, and they count as external schemas in this context.
+    # For this reason we need to check the reference relatively to the base uri.
+    full_reference = urljoin(resolver.base_uri, reference)
+    # If a fully-qualified reference is in the resolution stack, then we encounter it for the second time.
+    # Therefore it is a recursive reference.
+    return full_reference in resolver._scopes_stack
+
+
+def resolve_all_refs(
+    schema: Union[bool, Schema], *, resolver: LocalResolver = None
+) -> Schema:
+    """Resolve all non-recursive references in the given schema."""
+    if isinstance(schema, bool):
+        return canonicalish(schema)
+    assert isinstance(schema, dict), schema
+    if resolver is None:
+        resolver = LocalResolver.from_schema(deepcopy(schema))
+    if not isinstance(resolver, jsonschema.RefResolver):
+        raise InvalidArgument(
+            f"resolver={resolver} (type {type(resolver).__name__}) is not a RefResolver"
+        )
+
+    if "$ref" in schema:
+        # Recursive references are skipped to avoid infinite recursion.
+        if not is_recursive_reference(schema["$ref"], resolver):
+            s = dict(schema)
+            ref = s.pop("$ref")
+            with resolver.resolving(ref) as got:
+                if s == {}:
+                    return resolve_all_refs(deepcopy(got), resolver=resolver)
+                m = merged([s, got])
+                if m is None:  # pragma: no cover
+                    msg = f"$ref:{ref!r} had incompatible base schema {s!r}"
+                    raise HypothesisRefResolutionError(msg)
+                # `deepcopy` is not needed, because, the schemas are copied inside the `merged` call above
+                return resolve_all_refs(m, resolver=resolver)
+
+    for key in SCHEMA_KEYS:
+        val = schema.get(key, False)
+        if isinstance(val, list):
+            schema[key] = [
+                resolve_all_refs(deepcopy(v), resolver=resolver)
+                if isinstance(v, dict)
+                else v
+                for v in val
+            ]
+        elif isinstance(val, dict):
+            schema[key] = resolve_all_refs(deepcopy(val), resolver=resolver)
+        else:
+            assert isinstance(val, bool)
+
+    for key in SCHEMA_OBJECT_KEYS:  # values are keys-to-schema-dicts, not schemas
+        if key in schema:
+            subschema = schema[key]
+            assert isinstance(subschema, dict)
+            schema[key] = {
+                k: resolve_all_refs(deepcopy(v), resolver=resolver)
+                if isinstance(v, dict)
+                else v
+                for k, v in subschema.items()
+            }
+    assert isinstance(schema, dict)
+    return schema
 
 
 def merged(schemas: List[Any]) -> Optional[Schema]:
