@@ -22,7 +22,6 @@ from hypothesis.errors import FailedHealthCheck, HypothesisWarning, InvalidArgum
 from hypothesis.internal.reflection import proxies
 
 from hypothesis_jsonschema._canonicalise import (
-    HypothesisRefResolutionError,
     canonicalish,
     make_validator,
 )
@@ -304,16 +303,8 @@ def xfail_on_reference_resolve_error(f):
         assert isinstance(name, str)
         try:
             f(*args, **kwargs)
-            assert name not in RECURSIVE_REFS
         except jsonschema.exceptions.RefResolutionError as err:
-            if (
-                isinstance(err, HypothesisRefResolutionError)
-                or isinstance(err._cause, HypothesisRefResolutionError)
-            ) and (
-                "does not fetch remote references" in str(err)
-                or name in RECURSIVE_REFS
-                and "Could not resolve recursive references" in str(err)
-            ):
+            if "does not fetch remote references" in str(err):
                 pytest.xfail()
             raise
 
