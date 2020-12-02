@@ -22,6 +22,7 @@ from hypothesis.errors import FailedHealthCheck, HypothesisWarning, InvalidArgum
 from hypothesis.internal.reflection import proxies
 
 from hypothesis_jsonschema._canonicalise import (
+    LocalResolver,
     canonicalish,
     make_validator,
 )
@@ -239,7 +240,9 @@ def test_invalid_schemas_are_invalid(name):
 @pytest.mark.parametrize("name", sorted(NON_EXISTENT_REF_SCHEMAS))
 def test_invalid_ref_schemas_are_invalid(name):
     with pytest.raises(Exception):
-        resolve_all_refs(catalog[name])
+        schema = catalog[name]
+        resolver = LocalResolver.from_schema(schema)
+        resolve_all_refs(schema, resolver=resolver)
 
 
 RECURSIVE_REFS = {
